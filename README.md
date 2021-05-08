@@ -18,6 +18,13 @@ I spent a lot of time trying to extract a bunch of images from anime series (a f
 - [x] Flag corrupted image or non-image file
 - [ ] Flag duplicated images
 
+Features are demonstrated with the tests folder. The following images are flagged as noise:
+
+* 48971.png
+* 54987.png
+* 62410.png
+* 70864.png
+
 ## Performance
 
 Not gonna lie, it's surprisingly fast:
@@ -62,3 +69,7 @@ You can import this library the same way as any other python file:
 ```python
 import cleanax
 ```
+
+## Warranty
+
+`cleanax` is not meant to be a "high-quality software with a high liability", but rather a tool I *heavily* use myself during the composition of my datasets.
