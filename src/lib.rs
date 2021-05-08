@@ -1,124 +1,178 @@
-use image::{io::Reader as ImageReader, DynamicImage, GenericImageView};
+use image::{io::Reader as ImageReader, DynamicImage};
 use indicatif::ProgressBar;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 use pyo3::wrap_pyfunction;
 use rayon::prelude::*;
-use std::fs::read_dir;
 use std::io;
+use std::{fs::read_dir, iter::Sum};
 
-fn get_color_quantity_with_alpha<T: Sync + num_traits::PrimInt>(
-    image: &Vec<T>,
-    influence: f32,
-    (c1, c2, c3, alpha): (T, T, T, T),
-) -> f32 {
-    let quantity: f32 = image
-        .par_iter()
-        .chunks(4)
-        .map(|pixel| {
-            let r = *pixel[0];
-            let g = *pixel[1];
-            let b = *pixel[2];
-            let a = *pixel[3];
-
-            let r_diff = if r > c1 { r - c1 } else { c1 - r };
-
-            let g_diff = if g > c2 { g - c2 } else { c2 - g };
-
-            let b_diff = if b > c3 { b - c3 } else { c3 - b };
-
-            let a_diff = if a > alpha { a - alpha } else { alpha - b };
-
-            if r_diff.is_zero() && g_diff.is_zero() && b_diff.is_zero() && a_diff.is_zero() {
-                influence
-            } else {
-                0.0
-            }
-        })
-        .sum();
-
-    quantity
+#[derive(Debug)]
+struct Pixel {
+    r: u32,
+    g: u32,
+    b: u32,
+    a: u32,
 }
 
-fn get_color_quantity<T: Sync + num_traits::PrimInt>(
+impl Sum for Pixel {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        let mut sum: Pixel = Pixel {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 0,
+        };
+        for pixel in iter {
+            sum.r += pixel.r;
+            sum.g += pixel.g;
+            sum.b += pixel.b;
+            sum.a += pixel.a;
+        }
+
+        sum
+    }
+}
+
+impl Pixel {
+    fn div(&self, rhs: u32) -> Self {
+        Pixel {
+            r: self.r / rhs,
+            g: self.g / rhs,
+            b: self.b / rhs,
+            a: self.a / rhs,
+        }
+    }
+
+    fn is_zero(&self, threshold: u32) -> bool {
+        self.r < threshold && self.g < threshold && self.b < threshold && self.a < threshold
+    }
+}
+
+fn get_image_statistics_with_alpha<T: Sync + num::traits::PrimInt>(
     image: &Vec<T>,
-    influence: f32,
-    (c1, c2, c3): (T, T, T),
-) -> f32 {
-    let quantity: f32 = image
+) -> (Pixel, Pixel) {
+    let sum: Pixel = image
         .par_iter()
         .chunks(3)
         .map(|pixel| {
             let r = *pixel[0];
             let g = *pixel[1];
             let b = *pixel[2];
+            let a = *pixel[3];
 
-            let r_diff = if r > c1 { r - c1 } else { c1 - r };
-
-            let g_diff = if g > c2 { g - c2 } else { c2 - g };
-
-            let b_diff = if b > c3 { b - c3 } else { c3 - b };
-
-            if r_diff.is_zero() && g_diff.is_zero() && b_diff.is_zero() {
-                influence
-            } else {
-                0.0
+            Pixel {
+                r: r.to_u32().unwrap(),
+                g: g.to_u32().unwrap(),
+                b: b.to_u32().unwrap(),
+                a: a.to_u32().unwrap(),
             }
         })
         .sum();
 
-    quantity
+    let mean = sum.div(image.len() as u32 / 4);
+
+    let variance: Pixel = image
+        .par_iter()
+        .chunks(3)
+        .map(|pixel| {
+            let r = *pixel[0];
+            let g = *pixel[1];
+            let b = *pixel[2];
+            let a = *pixel[3];
+
+            Pixel {
+                r: r.to_u32().unwrap() - mean.r,
+                g: g.to_u32().unwrap() - mean.g,
+                b: b.to_u32().unwrap() - mean.b,
+                a: a.to_u32().unwrap() - mean.a,
+            }
+        })
+        .sum();
+
+    let variance = variance.div(image.len() as u32 / 4);
+
+    (mean, variance)
+}
+
+/// Compute mean and standard deviation from colors of given image.
+fn get_image_statistics<T: Sync + num::traits::PrimInt>(image: &Vec<T>) -> (Pixel, Pixel) {
+    let sum: Pixel = image
+        .par_iter()
+        .chunks(3)
+        .map(|pixel| {
+            let r = *pixel[0];
+            let g = *pixel[1];
+            let b = *pixel[2];
+            let a = T::zero();
+
+            Pixel {
+                r: r.to_u32().unwrap(),
+                g: g.to_u32().unwrap(),
+                b: b.to_u32().unwrap(),
+                a: a.to_u32().unwrap(),
+            }
+        })
+        .sum();
+
+    let mean = sum.div(image.len() as u32 / 3);
+
+    let variance: Pixel = image
+        .par_iter()
+        .chunks(3)
+        .map(|pixel| {
+            let r = *pixel[0];
+            let g = *pixel[1];
+            let b = *pixel[2];
+            let a = T::zero();
+
+            Pixel {
+                r: (r.to_u32().unwrap().checked_sub(mean.r).unwrap_or(0)).pow(2),
+                g: (g.to_u32().unwrap().checked_sub(mean.g).unwrap_or(0)).pow(2),
+                b: (b.to_u32().unwrap().checked_sub(mean.b).unwrap_or(0)).pow(2),
+                a: (a.to_u32().unwrap().checked_sub(mean.a).unwrap_or(0)).pow(2),
+            }
+        })
+        .sum();
+
+    let variance = variance.div(image.len() as u32 / 3);
+
+    (mean, variance)
 }
 
 /// Check if given image has more than `quantity` percent of given color.
 /// Return true if specified color proportion is greater than `quantity`.
 /// A the time being, only RGB and RGBA images are supported. That means
 /// an image with another channel format will be marked as deleted.
-fn check_solid_color(image: &DynamicImage, color: (u8, u8, u8), quantity: f32) -> bool {
-    // Influence of a single pixel
-    let influence = 100.0 / (image.width() * image.height()) as f32;
+fn check_solid_color(image: &DynamicImage) -> bool {
     // Extract pixels
     match image {
         DynamicImage::ImageRgb8(pixels) => {
             let buffer = pixels.as_raw();
-            let q = get_color_quantity(buffer, influence, color);
+            let q = get_image_statistics(buffer);
 
-            q > quantity
+            q.1.is_zero(20)
         }
         DynamicImage::ImageRgba8(pixels) => {
             let buffer = pixels.as_raw();
-            let q =
-                get_color_quantity_with_alpha(buffer, influence, (color.0, color.1, color.2, 255));
+            let q = get_image_statistics_with_alpha(buffer);
 
-            q > quantity
+            q.1.is_zero(20)
         }
         DynamicImage::ImageRgb16(pixels) => {
             let buffer = pixels.as_raw();
-            let q = get_color_quantity(
-                buffer,
-                influence,
-                (color.0 as u16 * 2, color.1 as u16 * 2, color.2 as u16 * 2),
-            );
+            let q = get_image_statistics(buffer);
 
-            q > quantity
+            q.1.is_zero(20)
         }
         DynamicImage::ImageRgba16(pixels) => {
             let buffer = pixels.as_raw();
-            let q = get_color_quantity_with_alpha(
-                buffer,
-                influence,
-                (
-                    color.0 as u16 * 2,
-                    color.1 as u16 * 2,
-                    color.2 as u16 * 2,
-                    std::u16::MAX,
-                ),
-            );
+            let q = get_image_statistics_with_alpha(buffer);
 
-            q > quantity
+            q.1.is_zero(20)
         }
-        DynamicImage::ImageBgr8(pixels) => false,
-        DynamicImage::ImageBgra8(pixels) => false,
+        DynamicImage::ImageBgr8(_) => false,
+        DynamicImage::ImageBgra8(_) => false,
         _ => {
             println!("Unsupported image format!");
             true
@@ -166,25 +220,10 @@ fn clean(py: Python, root_folder: String) -> PyResult<&PyList> {
                 Some(image) => {
                     // Take most present color and standard deviation
                     // A very low standard deviation means a solid color image
-                    
-                    // Completely black, red, green, blue and white image are invalid data by definition
-                    if check_solid_color(&image, (0, 0, 0), 80.0) {
-                        // Delete it -> because black
-                        Some(img.to_str().unwrap().to_string())
-                    } else if check_solid_color(&image, (255, 255, 255), 80.0) {
-                        // Delete it
-                        Some(img.to_str().unwrap().to_string())
-                    } else if check_solid_color(&image, (255, 0, 0), 80.0) {
-                        // Delete it
-                        Some(img.to_str().unwrap().to_string())
-                    } else if check_solid_color(&image, (0, 255, 0), 80.0) {
-                        // Delete it
-                        Some(img.to_str().unwrap().to_string())
-                    } else if check_solid_color(&image, (0, 0, 255), 80.0) {
-                        // Delete it
+
+                    if check_solid_color(&image) {
                         Some(img.to_str().unwrap().to_string())
                     } else {
-                        // Keep it
                         None
                     }
                 }
